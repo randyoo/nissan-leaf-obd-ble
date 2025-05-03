@@ -280,8 +280,11 @@ class NissanLeafObdBleSensor(NissanLeafObdBleEntity, SensorEntity):
     @property
     def native_value(self):
         """Return the state of the sensor."""
-        return self.coordinator.data.get(self._sensor)
-
+        value = self.coordinator.data.get(self._sensor)
+        if self._sensor in ["tp_fr", "tp_fl", "tp_rr", "tp_rl"] and value == 0:
+            return None  # Reflect unavailability for Home Assistant
+        return value
+    
     @property
     def icon(self):
         """Return the icon of the sensor."""
