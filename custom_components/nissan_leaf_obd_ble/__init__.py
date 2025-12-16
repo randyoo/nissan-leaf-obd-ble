@@ -33,22 +33,54 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         _LOGGER.info(STARTUP_MESSAGE)
 
     address: str = entry.data[CONF_ADDRESS]
-    ble_device = bluetooth.async_ble_device_from_address(
-        hass, address.upper(), True
-    ) or await get_device(address)
+    
+    # Try to find the BLE device with retry logic
+    max_retries = 3
+    base_delay = 1.0
+    ble_device = None
+    
+    for attempt in range(max_retries):
+        try:
+            ble_device = bluetooth.async_ble_device_from_address(
+                hass, address.upper(), True
+            )
+            if not ble_device:
+                _LOGGER.info("Device not found via Home Assistant Bluetooth, trying direct discovery (attempt %d/%d)", 
+                           attempt + 1, max_retries)
+                ble_device = await get_device(address)
+            
+            if ble_device:
+                _LOGGER.info("Successfully discovered BLE device: %s", address)
+                break
+            
+            if attempt < max_retries - 1:
+                await asyncio.sleep(base_delay * (2 ** attempt))
+        except Exception as err:
+            _LOGGER.warning("Error discovering device (attempt %d/%d): %s", 
+                          attempt + 1, max_retries, err)
+            if attempt < max_retries - 1:
+                await asyncio.sleep(base_delay * (2 ** attempt))
+    
     if not ble_device:
         raise ConfigEntryNotReady(
             f"Could not find OBDBLE device with address {address}"
         )
 
-    api = NissanLeafObdBleApiClient(address)
+    api = NissanLeafObdBleApiClient(ble_device)
     coordinator = NissanLeafObdBleDataUpdateCoordinator(
         hass, address=address, api=api, options=entry.options
     )
 
     hass.data[DOMAIN][entry.entry_id] = coordinator
 
-    await coordinator.async_config_entry_first_refresh()
+    # Initial refresh with error handling
+    try:
+        await coordinator.async_config_entry_first_refresh()
+    except Exception as err:
+        _LOGGER.error("Initial refresh failed: %s", err)
+        # Don't fail the setup, just log the error and continue
+        _LOGGER.info("Continuing setup despite initial refresh failure")
+    
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     @callback

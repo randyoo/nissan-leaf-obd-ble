@@ -78,16 +78,31 @@ class OBD:
         return self
 
     async def __connect(self, protocol, check_voltage, start_low_power):
-        """Attempt to instantiate an ELM327 connection object."""
+        """Attempt to instantiate an ELM327 connection object with retry logic."""
 
-        self.interface = await ELM327.create(
-            self.__device, protocol, self.timeout, check_voltage, start_low_power
-        )
+        max_retries = 2
+        base_delay = 0.5
+        
+        for attempt in range(max_retries):
+            self.interface = await ELM327.create(
+                self.__device, protocol, self.timeout, check_voltage, start_low_power
+            )
 
-        # if the connection failed, close it
-        if self.status() == OBDStatus.NOT_CONNECTED:
-            # the ELM327 class will report its own errors
+            # if the connection succeeded, we're done
+            if self.status() != OBDStatus.NOT_CONNECTED:
+                logger.info("Successfully connected to ELM327 (attempt %d)", attempt + 1)
+                return
+            
+            # Connection failed, clean up and retry
             await self.close()
+            
+            if attempt < max_retries - 1:
+                logger.warning("Connection attempt %d/%d failed, retrying...", 
+                             attempt + 1, max_retries)
+                await asyncio.sleep(base_delay * (2 ** attempt))
+        
+        # All attempts failed
+        logger.error("All connection attempts to ELM327 failed")
 
     async def __set_header(self, header) -> None:
         if header == self.__last_header:
@@ -183,29 +198,43 @@ class OBD:
         if not force and not self.test_cmd(cmd):
             return OBDResponse()
 
-        await self.__set_header(cmd.header)
+        try:
+            await self.__set_header(cmd.header)
 
-        logger.info("Sending command: %s", cmd)
-        cmd_string = self.__build_command_string(cmd)
-        messages = await self.interface.send_and_parse(cmd_string)
-        for f in messages[0].frames:
-            logger.debug("Received frame: %s", f.raw)
+            logger.info("Sending command: %s", cmd)
+            cmd_string = self.__build_command_string(cmd)
+            messages = await self.interface.send_and_parse(cmd_string)
+            
+            # Check if we got any messages back
+            if not messages:
+                logger.info("No valid OBD Messages returned")
+                return OBDResponse()
+            
+            for f in messages[0].frames:
+                logger.debug("Received frame: %s", f.raw)
 
-        # if we don't already know how many frames this command returns,
-        # log it, so we can specify it next time
-        if cmd not in self.__frame_counts:
-            self.__frame_counts[cmd] = sum([len(m.frames) for m in messages])
+            # if we don't already know how many frames this command returns,
+            # log it, so we can specify it next time
+            if cmd not in self.__frame_counts:
+                self.__frame_counts[cmd] = sum([len(m.frames) for m in messages])
 
-        if not messages:
-            logger.info("No valid OBD Messages returned")
-            return OBDResponse()
-
-        for m in messages:
-            if len(m.data) == 0 & ((m.raw == "NO DATA") | (m.raw == "CAN ERROR")):
-                logger.info("Vehicle not responding")
+            if not messages:
+                logger.info("No valid OBD Messages returned")
                 return OBDResponse()
 
-        return cmd(messages)  # compute a response object
+            for m in messages:
+                if len(m.data) == 0 & ((m.raw == "NO DATA") | (m.raw == "CAN ERROR")):
+                    logger.info("Vehicle not responding")
+                    return OBDResponse()
+
+            return cmd(messages)  # compute a response object
+            
+        except Exception as err:
+            logger.warning("Error executing query for command %s: %s", cmd.name, err)
+            # Check if connection was lost
+            if self.status() == OBDStatus.NOT_CONNECTED:
+                logger.error("Connection lost during query")
+            return OBDResponse()
 
     def __build_command_string(self, cmd):
         """Assemble the appropriate command string."""

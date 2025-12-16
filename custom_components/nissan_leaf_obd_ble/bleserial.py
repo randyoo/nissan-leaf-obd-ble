@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from typing import Optional
 
 from bleak import BleakClient, BleakError
 from bleak.backends.device import BLEDevice
@@ -21,17 +22,30 @@ class bleserial:
         self.service_uuid = service_uuid
         self.characteristic_uuid_read = characteristic_uuid_read
         self.characteristic_uuid_write = characteristic_uuid_write
-        self.client = None
+        self.client: Optional[BleakClient] = None
         self._rx_buffer = bytearray()
-        self._timeout = None
+        self._timeout: Optional[float] = None
+        self._write_timeout: Optional[float] = None
+        self._connection_attempts = 0
+        self._last_write_success = True
 
     async def _wait_for_data(self, size):
-        while len(self._rx_buffer) < size:
+        """Wait for data to be available in the buffer."""
+        max_retries = 100  # ~1 second timeout
+        for _ in range(max_retries):
+            if len(self._rx_buffer) >= size:
+                return
             await asyncio.sleep(0.01)
+        logger.warning("Timeout waiting for %d bytes of data", size)
 
     async def _wait_for_line(self):
-        while b"\n" not in self._rx_buffer:
+        """Wait for a complete line (containing \\n) to be available."""
+        max_retries = 100  # ~1 second timeout
+        for _ in range(max_retries):
+            if b"\n" in self._rx_buffer:
+                return
             await asyncio.sleep(0.01)
+        logger.warning("Timeout waiting for line terminator")
 
     def reset_input_buffer(self):
         """Reset the input buffer."""
@@ -76,66 +90,155 @@ class bleserial:
     def _notification_handler(self, sender, data):
         """Handle when a GATT notification arrives."""
         logger.debug("Notification received: %s", data)
-        self._rx_buffer.extend(data)
+        if data:  # Only extend buffer if we got actual data
+            self._rx_buffer.extend(data)
 
     async def open(self):
-        """Open the port."""
-        self.client = BleakClient(self.device)
-        try:
-            logger.debug("Connecting to device: %s", self.device)
-            await self.client.connect()
-            logger.debug("Connected to device: %s", self.device)
-            logger.debug(
-                "Starting notifications on characteristic UUID: %s",
-                self.characteristic_uuid_read,
-            )
-            await self.client.start_notify(
-                self.characteristic_uuid_read, self._notification_handler
-            )
-            logger.debug("Notifications started")
-        except BleakError as e:
-            logger.error("Failed to connect or start notifications: %s", e)
-            raise
+        """Open the port with retry logic."""
+        max_retries = 3
+        base_delay = 0.5
+        
+        for attempt in range(max_retries):
+            try:
+                self.client = BleakClient(self.device)
+                logger.debug("Connecting to device: %s (attempt %d/%d)", self.device, attempt + 1, max_retries)
+                await asyncio.wait_for(self.client.connect(), timeout=10.0)
+                logger.info("Connected to device: %s", self.device)
+                
+                logger.debug(
+                    "Starting notifications on characteristic UUID: %s",
+                    self.characteristic_uuid_read,
+                )
+                await asyncio.wait_for(
+                    self.client.start_notify(
+                        self.characteristic_uuid_read, self._notification_handler
+                    ),
+                    timeout=5.0
+                )
+                logger.info("Notifications started successfully")
+                
+                # Reset connection attempts on success
+                self._connection_attempts = 0
+                return
+                
+            except asyncio.TimeoutError:
+                logger.warning("Connection timeout (attempt %d/%d)", attempt + 1, max_retries)
+                if self.client:
+                    try:
+                        await self.client.disconnect()
+                    except:
+                        pass
+                    self.client = None
+            except BleakError as e:
+                logger.warning("Failed to connect or start notifications (attempt %d/%d): %s", 
+                             attempt + 1, max_retries, e)
+                if self.client:
+                    try:
+                        await self.client.disconnect()
+                    except:
+                        pass
+                    self.client = None
+            except Exception as e:
+                logger.error("Unexpected error during connection (attempt %d/%d): %s", 
+                            attempt + 1, max_retries, e)
+                if self.client:
+                    try:
+                        await self.client.disconnect()
+                    except:
+                        pass
+                    self.client = None
+            
+            if attempt < max_retries - 1:
+                await asyncio.sleep(base_delay * (2 ** attempt))
+        
+        logger.error("All connection attempts failed")
+        raise BleakError("Failed to connect after multiple attempts")
 
     async def close(self):
-        """Close the port."""
+        """Close the port gracefully."""
         if self.client:
             try:
                 logger.debug(
                     "Stopping notifications on characteristic UUID: %s",
                     self.characteristic_uuid_read,
                 )
-                await self.client.stop_notify(self.characteristic_uuid_read)
+                await asyncio.wait_for(
+                    self.client.stop_notify(self.characteristic_uuid_read),
+                    timeout=2.0
+                )
                 logger.debug("Notifications stopped")
+            except (BleakError, asyncio.TimeoutError) as e:
+                logger.warning("Failed to stop notifications: %s", e)
+            
+            try:
                 logger.debug("Disconnecting from device")
-                await self.client.disconnect()
+                await asyncio.wait_for(self.client.disconnect(), timeout=2.0)
                 logger.debug("Disconnected from device")
-            except BleakError as e:
-                logger.error("Failed to stop notifications or disconnect: %s", e)
-                raise
+            except (BleakError, asyncio.TimeoutError) as e:
+                logger.warning("Failed to disconnect: %s", e)
+            finally:
+                self.client = None
 
     async def write(self, data):
-        """Write bytes."""
+        """Write bytes with retry logic."""
         if isinstance(data, str):
             data = data.encode()
-        try:
-            logger.info(
-                "Writing data to characteristic UUID: %s Data: %s",
-                self.characteristic_uuid_write,
-                data,
-            )
-            await self.client.write_gatt_char(self.characteristic_uuid_write, data)
-            logger.debug("Data written")
-        except BleakError as e:
-            logger.error("Failed to write data: %s", e)
-            raise
+        
+        max_retries = 2
+        base_delay = 0.1
+        
+        for attempt in range(max_retries):
+            try:
+                if not self.client or not self.client.is_connected:
+                    logger.error("Cannot write: client not connected")
+                    self._last_write_success = False
+                    raise BleakError("Client not connected")
+                
+                logger.debug(
+                    "Writing data to characteristic UUID: %s Data: %s",
+                    self.characteristic_uuid_write,
+                    data,
+                )
+                await asyncio.wait_for(
+                    self.client.write_gatt_char(self.characteristic_uuid_write, data),
+                    timeout=2.0
+                )
+                logger.debug("Data written successfully")
+                self._last_write_success = True
+                return
+                
+            except (BleakError, asyncio.TimeoutError) as e:
+                logger.warning("Write attempt %d/%d failed: %s", attempt + 1, max_retries, e)
+                self._last_write_success = False
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(base_delay * (2 ** attempt))
+            except Exception as e:
+                logger.error("Unexpected error during write: %s", e)
+                self._last_write_success = False
+                raise
+        
+        logger.error("All write attempts failed")
+        raise BleakError("Failed to write after multiple attempts")
 
     async def read(self, size=1):
-        """Read from the buffer."""
+        """Read from the buffer with timeout handling."""
         try:
+            if not self.client or not self.client.is_connected:
+                logger.error("Cannot read: client not connected")
+                raise BleakError("Client not connected")
+            
             logger.debug("Reading %s bytes of data", size)
-            while len(self._rx_buffer) < size:
-                await asyncio.sleep(0.01)
+            
+            # Use timeout if set
+            if self._timeout:
+                try:
+                    await asyncio.wait_for(self._wait_for_data(size), timeout=self._timeout)
+                except asyncio.TimeoutError:
+                    logger.warning("Read operation timed out after %s seconds", self._timeout)
+                    raise BleakError(f"Read operation timed out after {self._timeout} seconds")
+            else:
+                await self._wait_for_data(size)
+            
             data = self._rx_buffer[:size]
             self._rx_buffer = self._rx_buffer[size:]
             logger.debug("Read data: %s", data)
@@ -145,18 +248,31 @@ class bleserial:
             raise
 
     async def readline(self):
-        """Read a whole line from the buffer."""
+        """Read a whole line from the buffer with timeout handling."""
         try:
+            if not self.client or not self.client.is_connected:
+                logger.error("Cannot read line: client not connected")
+                raise BleakError("Client not connected")
+            
             logger.debug("Reading line")
-            await asyncio.wait_for(self._wait_for_line(), timeout=self._timeout)
+            
+            # Use timeout if set
+            if self._timeout:
+                try:
+                    await asyncio.wait_for(self._wait_for_line(), timeout=self._timeout)
+                except asyncio.TimeoutError:
+                    logger.warning("Readline operation timed out after %s seconds", self._timeout)
+                    raise BleakError(f"Readline operation timed out after {self._timeout} seconds")
+            else:
+                await self._wait_for_line()
+            
             index = self._rx_buffer.index(b"\n") + 1
             data = self._rx_buffer[:index]
             self._rx_buffer = self._rx_buffer[index:]
             logger.debug("Read line: %s", data)
             return bytes(data)
-        except TimeoutError as e:
-            logger.error("Readline operation timed out")
-            raise BleakError("Readline operation timed out") from e
+        except BleakError:
+            raise
         except Exception as e:
             logger.error("Failed to read line: %s", e)
-            raise
+            raise BleakError(f"Failed to read line: {e}") from e
