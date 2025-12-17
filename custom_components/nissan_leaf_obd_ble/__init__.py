@@ -11,7 +11,8 @@ from bleak_retry_connector import get_device
 from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_ADDRESS
-from homeassistant.core import Config, HomeAssistant, callback
+from homeassistant.core_config import Config
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady
 
 from .api import NissanLeafObdBleApiClient
