@@ -43,8 +43,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         )
 
     api = NissanLeafObdBleApiClient(address)
+    # Provide default options if none exist yet
+    options = dict(entry.options) if entry.options else {
+        "cache_values": False,
+        "fast_poll": 10,
+        "slow_poll": 300,
+        "xs_poll": 3600,
+    }
     coordinator = NissanLeafObdBleDataUpdateCoordinator(
-        hass, address=address, api=api, options=entry.options
+        hass, address=address, api=api, options=options
     )
 
     hass.data[DOMAIN][entry.entry_id] = coordinator
