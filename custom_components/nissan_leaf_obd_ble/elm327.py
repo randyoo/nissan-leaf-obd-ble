@@ -98,10 +98,11 @@ class ELM327:
         # ------------- open port -------------
         try:
             await self.__port.open()
-        except Exception:
-            logger.warning(
-                "An error occurred: %s", ("auto" if protocol is None else protocol,)
-            )
+        except Exception as e:
+            logger.warning("An error occurred while opening port: %s", e)
+            if self.__port:
+                await self.__port.close()
+                self.__port = None
             return self
 
         # If we start with the IC in the low power state we need to wake it up
@@ -321,21 +322,29 @@ class ELM327:
     async def __write(self, cmd):
         """Low-level function to write a string to the port."""
 
-        if self.__port:
-            cmd += b"\r"  # terminate with carriage return in accordance with ELM327 and STN11XX specifications
-            logger.debug("write: " + repr(cmd))
-            try:
-                self.__port.reset_input_buffer()  # dump everything in the input buffer
-                await self.__port.write(cmd)  # turn the string into bytes and write
-                # self.__port.flush()  # wait for the output buffer to finish transmitting
-            except Exception as e:
-                logger.critical("Device disconnected while writing: %s", e)
-                self.__status = OBDStatus.NOT_CONNECTED
-                await self.__port.close()
-                self.__port = None
-                return
-        else:
+        if not self.__port:
             logger.info("cannot perform __write() when unconnected")
+            return
+
+        if not self.__port.client:
+            logger.critical("Port exists but client is not connected")
+            self.__status = OBDStatus.NOT_CONNECTED
+            await self.__port.close()
+            self.__port = None
+            return
+
+        cmd += b"\r"  # terminate with carriage return in accordance with ELM327 and STN11XX specifications
+        logger.debug("write: " + repr(cmd))
+        try:
+            self.__port.reset_input_buffer()  # dump everything in the input buffer
+            await self.__port.write(cmd)  # turn the string into bytes and write
+            # self.__port.flush()  # wait for the output buffer to finish transmitting
+        except Exception as e:
+            logger.critical("Device disconnected while writing: %s", e)
+            self.__status = OBDStatus.NOT_CONNECTED
+            await self.__port.close()
+            self.__port = None
+            return
 
     async def __read(self, end_marker=ELM_PROMPT):
         """Low-level read function.
