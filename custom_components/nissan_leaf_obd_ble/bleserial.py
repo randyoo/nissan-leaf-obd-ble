@@ -3,8 +3,9 @@
 import asyncio
 import logging
 
-from bleak import BleakClient, BleakError
+from bleak import BleakError
 from bleak.backends.device import BLEDevice
+from bleak_retry_connector import establish_connection, BleakClientWithServiceCache
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.WARNING)
@@ -17,11 +18,12 @@ class bleserial:
 
     def __init__(self, device: BLEDevice, service_uuid, characteristic_uuid_read, characteristic_uuid_write) -> None:
         """Initialise."""
+        from typing import Optional
         self.device = device
         self.service_uuid = service_uuid
         self.characteristic_uuid_read = characteristic_uuid_read
         self.characteristic_uuid_write = characteristic_uuid_write
-        self.client = None
+        self.client: Optional[BleakClientWithServiceCache] = None
         self._rx_buffer = bytearray()
         self._timeout = None
 
@@ -80,11 +82,15 @@ class bleserial:
 
     async def open(self):
         """Open the port."""
-        self.client = BleakClient(self.device)
+        self.client = await establish_connection(
+            BleakClientWithServiceCache,
+            self.device,
+            self.device.name or "Unknown Device",
+            max_attempts=3,
+            timeout=10.0
+        )
         try:
             logger.debug("Connecting to device: %s", self.device)
-            await self.client.connect()
-            logger.debug("Connected to device: %s", self.device)
             logger.debug(
                 "Starting notifications on characteristic UUID: %s",
                 self.characteristic_uuid_read,
