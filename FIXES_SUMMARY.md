@@ -1,102 +1,95 @@
-# Config Flow Fixes Summary
+# Fixes Summary for Nissan Leaf OBD BLE Integration
 
-## Issues Fixed
+## Problem Statement
+The integration was experiencing:
+1. **Log spam** when the car was charging or out of range
+2. **Connection errors** with `'str' object has no attribute 'name'`
+3. **Excessive WARNING and ERROR level logs** for expected scenarios
 
-### 1. AttributeError: property 'config_entry' of 'NissanLeafObdBleOptionsFlowHandler' object has no setter
+## Root Causes Identified
 
-**Problem:** The `NissanLeafObdBleOptionsFlowHandler` class was trying to directly assign to the `config_entry` attribute in `__init__`, but it was defined as a read-only property.
+### 1. Critical Bug in __init__.py
+The `NissanLeafObdBleApiClient` was being initialized with an address string instead of the actual BLE device object, causing the `'str' object has no attribute 'name'` error.
 
-**Solution:** 
-- Changed `self.config_entry = config_entry` to `self._config_entry = config_entry`
-- Added a proper `@property` getter that returns `self._config_entry`
-
-**Files Modified:** `custom_components/nissan_leaf_obd_ble/config_flow.py`
-
-### 2. KeyError: 'fast_poll' when setting up new config entries
-
-**Problem:** When a new config entry was created, the `options` dictionary was empty, causing a `KeyError` when the coordinator tried to access `options["fast_poll"]`, `options["slow_poll"]`, and `options["xs_poll"]`.
-
-**Solution:** 
-- Modified the coordinator's `options` setter to use `.get()` with default values instead of direct dictionary access
-- Added handling for `None` options using `options or {}`
-- Updated `__init__.py` to provide default options when creating a new config entry
-
-**Files Modified:** 
-- `custom_components/nissan_leaf_obd_ble/coordinator.py`
-- `custom_components/nissan_leaf_obd_ble/__init__.py`
-
-## Additional Fixes Found and Applied
-
-While investigating the main issues, I also found and fixed:
-
-### 3. Direct dictionary access to `options["cache_values"]` in coordinator.py
-
-**Problem:** The `_async_update_data` method was accessing `self.options["cache_values"]` directly, which could cause a `KeyError` if the option wasn't set.
-
-**Solution:** 
-- Replaced both instances of `self.options["cache_values"]` with `self.options.get("cache_values", False)`
-- This ensures that if the option is not present, it defaults to `False`, which is the same as the default value defined in `__init__.py`
-
-**Files Modified:** `custom_components/nissan_leaf_obd_ble/coordinator.py` (2 locations)
-
-### custom_components/nissan_leaf_obd_ble/config_flow.py
-
-```python
-class NissanLeafObdBleOptionsFlowHandler(config_entries.OptionsFlow):
-    """Config flow options handler for nissan_leaf_obd_ble."""
-
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        """Initialize options flow."""
-        self._config_entry = config_entry  # Changed from self.config_entry
-        self.options = dict(config_entry.options)
-
-    @property
-    def config_entry(self) -> config_entries.ConfigEntry:
-        """Return the config entry."""
-        return self._config_entry  # Added property getter
-```
-
-### custom_components/nissan_leaf_obd_ble/coordinator.py
-
-```python
-@options.setter
-def options(self, options):
-    """Set the configuration options."""
-    self._options = options or {}  # Handle None options
-    # Provide default values if options are not set yet
-    self._fast_poll_interval = options.get("fast_poll", 10)
-    self._slow_poll_interval = options.get("slow_poll", 300)
-    self._xs_poll_interval = options.get("xs_poll", 3600)
-```
-
-### custom_components/nissan_leaf_obd_ble/__init__.py
-
+**Before:**
 ```python
 api = NissanLeafObdBleApiClient(address)
-# Provide default options if none exist yet
-options = dict(entry.options) if entry.options else {
-    "cache_values": False,
-    "fast_poll": 10,
-    "slow_poll": 300,
-    "xs_poll": 3600,
-}
-coordinator = NissanLeafObdBleDataUpdateCoordinator(
-    hass, address=address, api=api, options=options
-)
 ```
 
-## Default Values
+**After:**
+```python
+api = NissanLeafObdBleApiClient(ble_device)
+```
 
-The following default values are now used when options are not provided:
-- `cache_values`: False
-- `fast_poll`: 10 seconds (matches FAST_POLL_INTERVAL constant)
-- `slow_poll`: 300 seconds (5 minutes, matches SLOW_POLL_INTERVAL constant)
-- `xs_poll`: 3600 seconds (1 hour, matches ULTRA_SLOW_POLL_INTERVAL constant)
+### 2. Inappropriate Logging Levels
+Many operations that are expected in normal operation (like connection timeouts, read failures) were logged at WARNING or ERROR level, causing excessive log noise.
 
-## Testing
+## Changes Made
 
-All changes have been verified to:
-1. Compile without syntax errors
-2. Follow Python best practices for property handling
-3. Provide graceful fallback behavior when options are missing
-4. Maintain backward compatibility with existing configurations
+### File: custom_components/nissan_leaf_obd_ble/__init__.py
+- **Line 52**: Fixed to pass `ble_device` instead of `address` to `NissanLeafObdBleApiClient`
+
+### File: custom_components/nissan_leaf_obd_ble/elm327.py
+- **Line 89**: Changed `logger.warning` to `logger.debug` for port opening errors
+- **Line 165**: Changed `logger.info` to `logger.debug` for write operations when unconnected
+- **Line 170**: Changed `logger.critical` to `logger.info` for client disconnection
+- **Line 182**: Changed `logger.critical` to `logger.info` for device disconnection while writing
+- **Line 345**: Changed `logger.info` to `logger.debug` for read operations when unconnected
+- **Line 357**: Changed `logger.critical` to `logger.info` for device disconnection while reading
+- **Line 362**: Changed `logger.warning` to `logger.debug` for failed port reads
+
+### File: custom_components/nissan_leaf_obd_ble/obd.py
+- **Line 157**: Changed `logger.warning` to `logger.debug` for query failures when not connected
+- **Lines 164, 168, 173, 177, 182, 186**: Changed multiple `logger.info` calls to `logger.debug` for header setting operations
+- **Line 195**: Changed `logger.info` to `logger.debug` for no valid OBD messages
+
+### File: custom_components/nissan_leaf_obd_ble/bleserial.py
+- **Line 120**: Changed `logger.info` to `logger.debug` for write operations
+- **Line 127**: Changed `logger.error` to `logger.info` for write failures
+- **Line 135**: Removed `logger.debug` call for read operation start (redundant)
+- **Line 140**: Changed `logger.error` to `logger.info` for read failures
+- **Line 148**: Removed `logger.debug` call for readline operation start (redundant)
+- **Line 153**: Changed `logger.error` to `logger.info` for readline timeouts
+- **Line 156**: Changed `logger.error` to `logger.info` for readline failures
+- **Line 87**: Changed `logger.debug` to `logger.info` for device connection (important info)
+- **Line 90**: Removed debug log for notification start (redundant)
+- **Line 96**: Changed `logger.error` to `logger.warning` for connection failures
+- **Lines 103, 105**: Removed debug logs for notification and disconnection operations
+- **Line 112**: Changed `logger.error` to `logger.info` for disconnect failures
+
+## Logging Level Strategy
+
+### DEBUG Level (Most verbose)
+- Internal operations and state changes
+- Expected transient conditions
+- Detailed flow information
+
+### INFO Level (Normal operation)
+- Important operational events
+- Connection attempts and successes
+- Significant state changes
+- User-visible actions
+
+### WARNING Level (Potential issues)
+- Non-critical failures that don't affect functionality
+- Retryable operations
+- Expected error conditions
+
+### ERROR Level (Actual problems)
+- Critical failures that need attention
+- Data corruption or loss
+- Unexpected exceptions
+
+## Expected Impact
+
+1. **Reduced log spam**: Most connection-related issues will now be logged at DEBUG level, reducing noise in the logs
+2. **Fixed critical bug**: The `'str' object has no attribute 'name'` error should be resolved
+3. **Better user experience**: Only truly important information will appear at INFO/WARNING/ERROR levels
+4. **Easier debugging**: When issues do occur, they'll be more visible against a cleaner log background
+
+## Testing Recommendations
+
+1. Test with car charging (should see reduced logs)
+2. Test with car out of range (should see reduced logs)
+3. Test normal operation (should still see connection info at INFO level)
+4. Verify that the integration still functions correctly in all scenarios

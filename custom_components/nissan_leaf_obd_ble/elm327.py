@@ -99,7 +99,7 @@ class ELM327:
         try:
             await self.__port.open()
         except Exception as e:
-            logger.warning("An error occurred while opening port: %s", e)
+            logger.debug("An error occurred while opening port: %s", e)
             if self.__port:
                 await self.__port.close()
                 self.__port = None
@@ -323,11 +323,11 @@ class ELM327:
         """Low-level function to write a string to the port."""
 
         if not self.__port:
-            logger.info("cannot perform __write() when unconnected")
+            logger.debug("cannot perform __write() when unconnected")
             return
 
         if not self.__port.client:
-            logger.critical("Port exists but client is not connected")
+            logger.info("Port exists but client is not connected")
             self.__status = OBDStatus.NOT_CONNECTED
             await self.__port.close()
             self.__port = None
@@ -340,7 +340,7 @@ class ELM327:
             await self.__port.write(cmd)  # turn the string into bytes and write
             # self.__port.flush()  # wait for the output buffer to finish transmitting
         except Exception as e:
-            logger.critical("Device disconnected while writing: %s", e)
+            logger.info("Device disconnected while writing: %s", e)
             self.__status = OBDStatus.NOT_CONNECTED
             await self.__port.close()
             self.__port = None
@@ -354,7 +354,7 @@ class ELM327:
         returns a list of [/r/n] delimited strings
         """
         if not self.__port:
-            logger.info("cannot perform __read() when unconnected")
+            logger.debug("cannot perform __read() when unconnected")
             return []
 
         buffer = bytearray()
@@ -367,12 +367,12 @@ class ELM327:
                 self.__status = OBDStatus.NOT_CONNECTED
                 await self.__port.close()
                 self.__port = None
-                logger.critical("Device disconnected while reading")
+                logger.info("Device disconnected while reading")
                 return []
 
             # if nothing was received
             if not data:
-                logger.warning("Failed to read port")
+                logger.debug("Failed to read port")
                 break
 
             buffer.extend(data)

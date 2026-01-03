@@ -19,6 +19,12 @@ class bleserial:
     def __init__(self, device: BLEDevice, service_uuid, characteristic_uuid_read, characteristic_uuid_write) -> None:
         """Initialise."""
         from typing import Optional
+        
+        # Validate that device is a proper BLEDevice object or at least has the required attributes
+        if not hasattr(device, 'name') and not isinstance(device, str):
+            logger.error("Invalid device object: expected BLEDevice or string, got %s", type(device))
+            raise ValueError(f"Invalid device object: {device}")
+        
         self.device = device
         self.service_uuid = service_uuid
         self.characteristic_uuid_read = characteristic_uuid_read
@@ -82,50 +88,41 @@ class bleserial:
 
     async def open(self):
         """Open the port."""
+        device_name = getattr(self.device, 'name', str(self.device)) or "Unknown Device"
         self.client = await establish_connection(
             BleakClientWithServiceCache,
             self.device,
-            self.device.name or "Unknown Device",
+            device_name,
             max_attempts=3,
             timeout=10.0
         )
         try:
-            logger.debug("Connecting to device: %s", self.device)
-            logger.debug(
-                "Starting notifications on characteristic UUID: %s",
-                self.characteristic_uuid_read,
-            )
+            logger.info("Connecting to device: %s", self.device)
             await self.client.start_notify(
                 self.characteristic_uuid_read, self._notification_handler
             )
             logger.debug("Notifications started")
         except BleakError as e:
-            logger.error("Failed to connect or start notifications: %s", e)
+            logger.warning("Failed to connect or start notifications: %s", e)
             raise
 
     async def close(self):
         """Close the port."""
         if self.client:
             try:
-                logger.debug(
-                    "Stopping notifications on characteristic UUID: %s",
-                    self.characteristic_uuid_read,
-                )
                 await self.client.stop_notify(self.characteristic_uuid_read)
                 logger.debug("Notifications stopped")
-                logger.debug("Disconnecting from device")
                 await self.client.disconnect()
                 logger.debug("Disconnected from device")
             except BleakError as e:
-                logger.error("Failed to stop notifications or disconnect: %s", e)
-                raise
+                logger.info("Failed to stop notifications or disconnect: %s", e)
 
     async def write(self, data):
         """Write bytes."""
         if isinstance(data, str):
             data = data.encode()
         try:
-            logger.info(
+            logger.debug(
                 "Writing data to characteristic UUID: %s Data: %s",
                 self.characteristic_uuid_write,
                 data,
@@ -133,13 +130,12 @@ class bleserial:
             await self.client.write_gatt_char(self.characteristic_uuid_write, data)
             logger.debug("Data written")
         except BleakError as e:
-            logger.error("Failed to write data: %s", e)
+            logger.info("Failed to write data: %s", e)
             raise
 
     async def read(self, size=1):
         """Read from the buffer."""
         try:
-            logger.debug("Reading %s bytes of data", size)
             while len(self._rx_buffer) < size:
                 await asyncio.sleep(0.01)
             data = self._rx_buffer[:size]
@@ -147,13 +143,12 @@ class bleserial:
             logger.debug("Read data: %s", data)
             return bytes(data)
         except Exception as e:
-            logger.error("Failed to read data: %s", e)
+            logger.info("Failed to read data: %s", e)
             raise
 
     async def readline(self):
         """Read a whole line from the buffer."""
         try:
-            logger.debug("Reading line")
             await asyncio.wait_for(self._wait_for_line(), timeout=self._timeout)
             index = self._rx_buffer.index(b"\n") + 1
             data = self._rx_buffer[:index]
@@ -161,8 +156,8 @@ class bleserial:
             logger.debug("Read line: %s", data)
             return bytes(data)
         except TimeoutError as e:
-            logger.error("Readline operation timed out")
+            logger.info("Readline operation timed out")
             raise BleakError("Readline operation timed out") from e
         except Exception as e:
-            logger.error("Failed to read line: %s", e)
+            logger.info("Failed to read line: %s", e)
             raise

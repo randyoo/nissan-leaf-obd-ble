@@ -94,34 +94,34 @@ class OBD:
             return
         r = await self.interface.send_and_parse(b"AT SH " + header + b" ")
         if not r:
-            logger.info("Set Header ('AT SH %s') did not return data", header)
+            logger.debug("Set Header ('AT SH %s') did not return data", header)
             return
         if "\n".join([m.raw() for m in r]) != "OK":
-            logger.info("Set Header ('AT SH %s') did not return 'OK'", header)
+            logger.debug("Set Header ('AT SH %s') did not return 'OK'", header)
             return
 
         r = await self.interface.send_and_parse(b"AT FC SH " + header + b" ")
         if not r:
-            logger.info("Set Header ('AT FC SH %s') did not return data", header)
+            logger.debug("Set Header ('AT FC SH %s') did not return data", header)
             return
         if "\n".join([m.raw() for m in r]) != "OK":
-            logger.info("Set Header ('AT FC SH %s') did not return 'OK'", header)
+            logger.debug("Set Header ('AT FC SH %s') did not return 'OK'", header)
             return
 
         r = await self.interface.send_and_parse(b"AT FC SD 30 00 00")
         if not r:
-            logger.info("Set Header ('AT FC SD %s') did not return data", header)
+            logger.debug("Set Header ('AT FC SD %s') did not return data", header)
             return
         if "\n".join([m.raw() for m in r]) != "OK":
-            logger.info("Set Header ('AT FC SD %s') did not return 'OK'", header)
+            logger.debug("Set Header ('AT FC SD %s') did not return 'OK'", header)
             return
 
         r = await self.interface.send_and_parse(b"AT FC SM 1")
         if not r:
-            logger.info("Set Header ('AT FC SM %s') did not return data", header)
+            logger.debug("Set Header ('AT FC SM %s') did not return data", header)
             return
         if "\n".join([m.raw() for m in r]) != "OK":
-            logger.info("Set Header ('AT FC SM %s') did not return 'OK'", header)
+            logger.debug("Set Header ('AT FC SM %s') did not return 'OK'", header)
             return
 
         self.__last_header = header
@@ -176,7 +176,7 @@ class OBD:
         """Primary API function. Send commands to the car, and protect against sending unsupported commands."""
 
         if self.status() == OBDStatus.NOT_CONNECTED:
-            logger.warning("Query failed, no connection available")
+            logger.debug("Query failed, no connection available")
             return OBDResponse()
 
         # if the user forces, skip all checks
@@ -197,7 +197,7 @@ class OBD:
             self.__frame_counts[cmd] = sum([len(m.frames) for m in messages])
 
         if not messages:
-            logger.info("No valid OBD Messages returned")
+            logger.debug("No valid OBD Messages returned")
             return OBDResponse()
 
         for m in messages:
